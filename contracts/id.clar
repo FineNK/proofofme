@@ -3,12 +3,29 @@
 
 (define-data-var admin principal tx-sender)
 
+;; Constants for validation
+(define-constant MIN-DID-LENGTH u10)
+(define-constant METADATA-HASH-LENGTH u32)
+(define-constant MIN-NAME-LENGTH u3)
+(define-constant MAX-NAME-LENGTH u50)
+(define-constant DID-PREFIX "did:")
+
+;; Error constants
+(define-constant ERR-NOT-AUTHORIZED (err u100))
+(define-constant ERR-ALREADY-REGISTERED (err u101))
+(define-constant ERR-NOT-REGISTERED (err u102))
+(define-constant ERR-INVALID-VERIFIER (err u103))
+(define-constant ERR-INVALID-DID (err u104))
+(define-constant ERR-INVALID-METADATA (err u105))
+(define-constant ERR-INVALID-NAME (err u106))
+(define-constant ERR-SELF-VERIFICATION (err u107))
+
 ;; Data structures for identity records
 (define-map identities
     principal
     {
-        did: (string-utf8 50),              ;; Decentralized identifier
-        metadata-hash: (buff 32),           ;; IPFS hash of encrypted metadata
+        did: (string-utf8 50),
+        metadata-hash: (buff 32),
         verification-status: bool,
         created-at: uint,
         last-updated: uint
@@ -25,11 +42,29 @@
     }
 )
 
-;; Constants
-(define-constant ERR-NOT-AUTHORIZED (err u100))
-(define-constant ERR-ALREADY-REGISTERED (err u101))
-(define-constant ERR-NOT-REGISTERED (err u102))
-(define-constant ERR-INVALID-VERIFIER (err u103))
+;; Validation functions
+(define-private (is-valid-did (did (string-utf8 50)))
+    (let ((length (len did)))
+        (and 
+            (>= length MIN-DID-LENGTH)
+            (<= length MAX-NAME-LENGTH)
+            (is-eq (get-substring? did u0 u4) (some DID-PREFIX))
+        )
+    )
+)
+
+(define-private (is-valid-metadata-hash (hash (buff 32)))
+    (is-eq (len hash) METADATA-HASH-LENGTH)
+)
+
+(define-private (is-valid-name (name (string-utf8 50)))
+    (let ((length (len name)))
+        (and 
+            (>= length MIN-NAME-LENGTH)
+            (<= length MAX-NAME-LENGTH)
+        )
+    )
+)
 
 ;; Initialize contract
 (define-public (initialize-contract)
@@ -37,10 +72,12 @@
         (asserts! (is-eq tx-sender (var-get admin)) ERR-NOT-AUTHORIZED)
         (ok true)))
 
-;; Register new identity
+;; Register new identity with validation
 (define-public (register-identity (did (string-utf8 50)) (metadata-hash (buff 32)))
-    (let ((existing-identity (map-get? identities tx-sender)))
-        (asserts! (is-none existing-identity) ERR-ALREADY-REGISTERED)
+    (begin
+        (asserts! (is-valid-did did) ERR-INVALID-DID)
+        (asserts! (is-valid-metadata-hash metadata-hash) ERR-INVALID-METADATA)
+        (asserts! (is-none (map-get? identities tx-sender)) ERR-ALREADY-REGISTERED)
         (ok (map-set identities tx-sender
             {
                 did: did,
@@ -50,20 +87,25 @@
                 last-updated: block-height
             }))))
 
-;; Update identity metadata
+;; Update identity metadata with validation
 (define-public (update-metadata (new-metadata-hash (buff 32)))
-    (let ((identity (unwrap! (map-get? identities tx-sender) ERR-NOT-REGISTERED)))
-        (ok (map-set identities tx-sender
-            (merge identity
-                {
-                    metadata-hash: new-metadata-hash,
-                    last-updated: block-height
-                })))))
+    (begin
+        (asserts! (is-valid-metadata-hash new-metadata-hash) ERR-INVALID-METADATA)
+        (match (map-get? identities tx-sender)
+            identity (ok (map-set identities tx-sender
+                (merge identity
+                    {
+                        metadata-hash: new-metadata-hash,
+                        last-updated: block-height
+                    })))
+            ERR-NOT-REGISTERED)))
 
-;; Add verifier
+;; Add verifier with validation
 (define-public (add-verifier (verifier-principal principal) (verifier-name (string-utf8 50)))
     (begin
         (asserts! (is-eq tx-sender (var-get admin)) ERR-NOT-AUTHORIZED)
+        (asserts! (is-valid-name verifier-name) ERR-INVALID-NAME)
+        (asserts! (not (is-eq verifier-principal tx-sender)) ERR-SELF-VERIFICATION)
         (ok (map-set verifiers verifier-principal
             {
                 name: verifier-name,
@@ -71,18 +113,20 @@
                 verification-count: u0
             }))))
 
-;; Verify identity
+;; Verify identity with safety checks
 (define-public (verify-identity (identity-owner principal))
-    (let (
-        (verifier (unwrap! (map-get? verifiers tx-sender) ERR-INVALID-VERIFIER))
-        (identity (unwrap! (map-get? identities identity-owner) ERR-NOT-REGISTERED))
-    )
-    (ok (map-set identities identity-owner
-        (merge identity
-            {
-                verification-status: true,
-                last-updated: block-height
-            })))))
+    (begin
+        (asserts! (not (is-eq identity-owner tx-sender)) ERR-SELF-VERIFICATION)
+        (match (map-get? verifiers tx-sender)
+            verifier (match (map-get? identities identity-owner)
+                identity (ok (map-set identities identity-owner
+                    (merge identity
+                        {
+                            verification-status: true,
+                            last-updated: block-height
+                        })))
+                ERR-NOT-REGISTERED)
+            ERR-INVALID-VERIFIER)))
 
 ;; Read-only functions
 (define-read-only (get-identity (identity-owner principal))
