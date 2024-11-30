@@ -8,7 +8,6 @@
 (define-constant METADATA-HASH-LENGTH u32)
 (define-constant MIN-NAME-LENGTH u3)
 (define-constant MAX-NAME-LENGTH u50)
-(define-constant DID-PREFIX "did:")
 
 ;; Error constants
 (define-constant ERR-NOT-AUTHORIZED (err u100))
@@ -48,7 +47,6 @@
         (and 
             (>= length MIN-DID-LENGTH)
             (<= length MAX-NAME-LENGTH)
-            (is-eq (get-substring? did u0 u4) (some DID-PREFIX))
         )
     )
 )
